@@ -1,115 +1,132 @@
-﻿# =========================
-# Windows 11 System Enum
 # =========================
+# Windows 11 System Enum Tool
+# Modular + Interactive
+# =========================
+
+$choices = @(
+    "All",
+    "Network Info",
+    "Storage Info",
+    "Installed Apps",
+    "Security Check",
+    "Processes",
+    "Services"
+)
+
+$selected = $choices | Out-GridView -Title "Select Modules to Run" -PassThru
+
+if (-not $selected) {
+    Write-Host "No selection made. Exiting..." -ForegroundColor Yellow
+    return
+}
+
+# Handle "All"
+if ($selected -contains "All") {
+    $selected = $choices | Where-Object { $_ -ne "All" }
+}
 
 $Report = [ordered]@{}
 
-# --- OS + Build ---
+# =========================
+# OS + Device (always included)
+# =========================
 $OS = Get-CimInstance Win32_OperatingSystem
+$CS = Get-CimInstance Win32_ComputerSystem
 
-$Report.OS = [ordered]@{
-    Name        = $OS.Caption
-    Version     = $OS.Version
-    Build       = $OS.BuildNumber
-    InstallDate = $OS.InstallDate
-    Uptime      = (Get-Date) - $OS.LastBootUpTime
+$Report.System = [ordered]@{
+    OS_Name    = $OS.Caption
+    Version    = $OS.Version
+    Build      = $OS.BuildNumber
+    Uptime     = (Get-Date) - $OS.LastBootUpTime
+    DeviceName = $CS.Name
+    Manufacturer = $CS.Manufacturer
+    Model      = $CS.Model
+    RAM_GB     = [math]::Round($CS.TotalPhysicalMemory / 1GB, 2)
 }
 
-# --- Device Info ---
-$Computer = Get-CimInstance Win32_ComputerSystem
+# =========================
+# NETWORK
+# =========================
+if ($selected -contains "Network Info") {
 
-$Report.Device = [ordered]@{
-    Name   = $Computer.Name
-    Model  = $Computer.Model
-    Vendor = $Computer.Manufacturer
-    RAM_GB = [math]::Round($Computer.TotalPhysicalMemory / 1GB, 2)
+    $Report.Network = Get-CimInstance Win32_NetworkAdapterConfiguration |
+        Where-Object { $_.IPEnabled } |
+        Select-Object @{
+            Name = "Description"; Expression = {$_.Description}
+        }, IPAddress, MACAddress, DHCPEnabled
 }
 
-# --- CPU ---
-$CPU = Get-CimInstance Win32_Processor
+# =========================
+# STORAGE
+# =========================
+if ($selected -contains "Storage Info") {
 
-$Report.CPU = [ordered]@{
-    Name     = $CPU.Name
-    Cores    = $CPU.NumberOfCores
-    Threads  = $CPU.NumberOfLogicalProcessors
-    MaxClock = $CPU.MaxClockSpeed
-}
-
-# --- Storage (fixed drives only) ---
-$Drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
-
-$Report.Storage = $Drives | ForEach-Object {
-    [ordered]@{
-        Drive   = $_.DeviceID
-        SizeGB  = [math]::Round($_.Size / 1GB, 2)
-        FreeGB  = [math]::Round($_.FreeSpace / 1GB, 2)
-        FreePct = if ($_.Size) {
-            [math]::Round(($_.FreeSpace / $_.Size) * 100, 2)
-        } else { 0 }
-    }
-}
-
-# --- Network ---
-$Adapters = Get-CimInstance Win32_NetworkAdapterConfiguration |
-    Where-Object { $_.IPEnabled }
-
-$Report.Network = $Adapters | ForEach-Object {
-    [ordered]@{
-        Name        = $_.Description
-        IP          = $_.IPAddress
-        MAC         = $_.MACAddress
-        DHCP        = $_.DHCPEnabled
-    }
-}
-
-# --- Installed Apps (Windows 11 style) ---
-$Report.Apps = Get-AppxPackage |
-    Select-Object Name, Version, Publisher |
-    Sort-Object Name
-
-# --- Optional: classic installed programs (registry uninstall list) ---
-$UninstallPaths = @(
-    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-)
-
-$Report.LegacyApps = Get-ItemProperty $UninstallPaths -ErrorAction SilentlyContinue |
-    Where-Object DisplayName |
-    Select-Object DisplayName, DisplayVersion, Publisher |
-    Sort-Object DisplayName
-
-# --- Running Processes (top CPU) ---
-$Report.TopProcesses = Get-Process |
-    Sort-Object CPU -Descending |
-    Select-Object -First 10 Name, Id, CPU, WorkingSet
-
-# --- Services ---
-$Report.Services = Get-Service |
-    Where-Object Status -eq "Running" |
-    Select-Object Name, DisplayName
-
-# --- Startup (registry-based) ---
-$StartupKeys = @(
-    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run",
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-)
-
-$Report.Startup = foreach ($key in $StartupKeys) {
-    if (Test-Path $key) {
-        Get-ItemProperty $key |
+    $Report.Storage = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
         ForEach-Object {
-            $_.PSObject.Properties |
-            Where-Object { $_.Name -notlike "PS*" } |
-            ForEach-Object {
-                [PSCustomObject]@{
-                    Location = $key
-                    Name     = $_.Name
-                    Value    = $_.Value
-                }
+            [ordered]@{
+                Drive    = $_.DeviceID
+                Size_GB  = [math]::Round($_.Size / 1GB, 2)
+                Free_GB  = [math]::Round($_.FreeSpace / 1GB, 2)
+                Free_Pct = if ($_.Size) {
+                    [math]::Round(($_.FreeSpace / $_.Size) * 100, 2)
+                } else { 0 }
             }
         }
+}
+
+# =========================
+# APPS
+# =========================
+if ($selected -contains "Installed Apps") {
+
+    $Report.Appx = Get-AppxPackage |
+        Select-Object Name, Version, Publisher |
+        Sort-Object Name
+
+    $Report.LegacyApps = Get-ItemProperty `
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" ,
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" `
+        -ErrorAction SilentlyContinue |
+        Where-Object DisplayName |
+        Select-Object DisplayName, DisplayVersion, Publisher |
+        Sort-Object DisplayName
+}
+
+# =========================
+# SECURITY
+# =========================
+if ($selected -contains "Security Check") {
+
+    $Report.Security = [ordered]@{
+        Defender = Get-MpComputerStatus |
+            Select-Object AMServiceEnabled, RealTimeProtectionEnabled, AntivirusEnabled
+
+        LocalAdmins = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue |
+            Select-Object Name, ObjectClass
     }
 }
 
-# --- Output ---
-$Report | ConvertTo-Json -Depth 5
+# =========================
+# PROCESSES
+# =========================
+if ($selected -contains "Processes") {
+
+    $Report.TopProcesses = Get-Process |
+        Sort-Object CPU -Descending |
+        Select-Object -First 10 Name, Id, CPU, WorkingSet
+}
+
+# =========================
+# SERVICES
+# =========================
+if ($selected -contains "Services") {
+
+    $Report.Services = Get-Service |
+        Where-Object Status -eq "Running" |
+        Select-Object Name, DisplayName
+}
+
+# =========================
+# OUTPUT
+# =========================
+$Report | ConvertTo-Json -Depth 6
