@@ -1,6 +1,5 @@
 # =========================
-# Windows 11 System Enum Tool
-# Modular + Interactive
+# Windows 11 System Enumeration Tool
 # =========================
 
 $choices = @(
